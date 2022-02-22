@@ -30,6 +30,7 @@
 #include <boost/test/unit_test.hpp>
 #include <boost/throw_exception.hpp>
 
+#include <algorithm>
 #include <fstream>
 #include <memory>
 #include <stdexcept>
@@ -48,6 +49,15 @@ namespace
 {
 
 string const sourceDelimiter("==== Source: ");
+
+const std::map<string, CompilerStack::State> compilerStateMap = {
+	{"Empty", CompilerStack::State::Empty},
+	{"SourcesSet", CompilerStack::State::SourcesSet},
+	{"Parsed", CompilerStack::State::Parsed},
+	{"ParsedAndImported", CompilerStack::State::ParsedAndImported},
+	{"AnalysisPerformed", CompilerStack::State::AnalysisPerformed},
+	{"CompilationSuccessful", CompilerStack::State::CompilationSuccessful}
+};
 
 void replaceVersionWithTag(string& _input)
 {
@@ -92,6 +102,7 @@ ASTJSONTest::ASTJSONTest(string const& _filename)
 	string source;
 	string line;
 	string const delimiter("// ----");
+	string const failMarker("// Fail on:");
 	while (getline(file, line))
 	{
 		if (boost::algorithm::starts_with(line, sourceDelimiter))
@@ -104,6 +115,15 @@ ASTJSONTest::ASTJSONTest(string const& _filename)
 				line.size() - " ===="s.size() - sourceDelimiter.size()
 			);
 			source = string();
+		}
+		else if (boost::algorithm::starts_with(line, failMarker))
+		{
+			string state = line.substr(failMarker.size(), line.size());
+			state.erase(std::remove_if(state.begin(), state.end(),
+									   [](unsigned char x){return std::isspace(x);}),
+						state.end());
+			solAssert(compilerStateMap.count(state), "Unsupported compiler state in sol file");
+			m_expectedFailState = compilerStateMap.at(state);
 		}
 		else if (!line.empty() && !boost::algorithm::starts_with(line, delimiter))
 			source += line + "\n";
@@ -141,8 +161,7 @@ TestCase::TestResult ASTJSONTest::run(ostream& _stream, string const& _linePrefi
 
 		if (!c.parseAndAnalyze(variant.stopAfter))
 		{
-			// We just want to export so raise fatal analysis errors only
-			if (c.state() < CompilerStack::State::ParsedAndImported)
+			if (!m_expectedFailState || m_expectedFailState != c.state())
 			{
 				SourceReferenceFormatter formatter(_stream, c, _formatted, false);
 				formatter.printErrorInformation(c.errors());

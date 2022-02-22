@@ -6,3 +6,4 @@ contract C is NotExisting.X
 }
 
 // ----
+// Fail on: ParsedAndImported
