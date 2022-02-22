@@ -180,7 +180,12 @@ function diff_values
     shift
     shift
 
-    diff --color=auto --unified=0 <(echo "$value1") <(echo "$value2") "$@"
+    local color_option="--color=auto"
+    if [[ $OSTYPE == 'darwin'* ]]; then
+        color_option=
+    fi
+    # shellcheck disable=SC2086
+    diff ${color_option} --unified=0 <(echo "$value1") <(echo "$value2") "$@"
 }
 
 function safe_kill
