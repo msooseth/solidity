@@ -52,7 +52,7 @@ optional<vector<Literal>> parseLine(std::string& line)
 {
 	vector<Literal> cl;
 	bool end_of_clause = false;
-	for (const auto& part: line | ranges::views::split(' '))
+	for (auto const& part: line | ranges::views::split(' '))
 	{
 		if (end_of_clause)
 		{
@@ -75,7 +75,7 @@ optional<vector<Literal>> parseLine(std::string& line)
 	if (verbose)
 	{
 		cout << "cl: ";
-		for (const auto& l: cl)
+		for (auto const& l: cl)
 			cout << (l.positive ? "" : "-") << (l.variable+1) << " ";
 		cout << " end: " << (int)end_of_clause << endl;
 	}
@@ -132,8 +132,8 @@ std::pair<vector<vector<Literal>>, size_t> readCNFFile(const string& fname)
 size_t getNumVars(const vector<vector<Literal>>& cls)
 {
 	size_t largestVar = 0;
-	for (const auto& cl: cls)
-		for (const auto& l: cl)
+	for (auto const& cl: cls)
+		for (auto const& l: cl)
 			largestVar = std::max(largestVar, l.variable+1);
 
 	return largestVar;
@@ -168,7 +168,7 @@ int main(int argc, char** argv)
 		const size_t line_break_after = 80;
 		stringstream ss;
 		ss << "v";
-		for(size_t i = 0; i < model->size(); i++) {
+		for (size_t i = 0; i < model->size(); i++) {
 			if (ss.str().size() > line_break_after) {
 				cout << ss.str() << endl;
 				ss.clear();

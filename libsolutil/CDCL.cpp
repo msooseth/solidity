@@ -251,7 +251,7 @@ void CDCL::addClause(const Clause& _lits)
 
 	Clause clause{_lits};
 	Clause clause_updated;
-	for (const auto& l: clause)
+	for (auto const& l: clause)
 	{
 		// Clause is satisfied, nothing to do.
 		if (value(l) == TriState::t_true())
