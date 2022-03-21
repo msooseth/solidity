@@ -44,16 +44,38 @@ CDCL::CDCL(
 	// TODO some sanity checks like no empty clauses, no duplicate literals?
 }
 
+
+double CDCL::luby(double y, int x)
+{
+    int size = 1;
+    int seq;
+    for (seq = 0
+        ; size < x + 1
+        ; seq++
+    ) {
+        size = 2 * size + 1;
+    }
+
+    while (size - 1 != x) {
+        size = (size - 1) >> 1;
+        seq--;
+        x = x % size;
+    }
+
+    return std::pow(y, seq);
+}
+
 optional<CDCL::Model> CDCL::solve()
 {
 	CDCL::Model model;
 	int solution;
-	uint32_t max_conflicts = 100;
+	int loop = 1;
 	bool solved = false;
 	while(!solved) {
 		solution = 3;
+		uint32_t max_conflicts = (uint32_t)((double)luby(2, loop) * 40.0);
 		solved = solve_loop(max_conflicts, model, solution);
-		max_conflicts = uint32_t((double)max_conflicts * 1.2);
+		loop++;
 	}
 	assert(solution != 3);
 	if (solution) return model;

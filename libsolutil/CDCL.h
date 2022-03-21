@@ -78,6 +78,7 @@ private:
     };
 
 
+	double luby(double y, int x);
 	bool solve_loop(const uint32_t max_conflicts, CDCL::Model& model, int& solution);
 	void setupWatches(Clause& _clause);
 	std::optional<Clause> propagate();
