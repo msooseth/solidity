@@ -233,35 +233,43 @@ pair<CheckResult, vector<string>> BooleanLPSolver::check(vector<Expression> cons
 		else
 			resizeAndSet(lpState.variableNames, index, name);
 
-	//cout << "Boolean variables:" << joinHumanReadable(booleanVariables) << endl;
-	//cout << "Running LP solver on fixed constraints." << endl;
-	if (m_lpSolver.check(lpState).first == LPResult::Infeasible)
+	// TODO keep a cache as a member that is never reset.
+	// TODO We can also keep the split unconditionals across push/pop
+	// We only need to be careful to update the number of variables.
+
+	std::vector<std::pair<size_t, LPSolver>> lpSolvers;
+
+	// TODO We start afresh here. If we want this to reuse the existing results
+	// from previous invocations of the boolean solver, we still have to use
+	// a cache.
+	// The current optimization is only for CDCL.
+	lpSolvers.emplace_back(0, LPSolver{&m_lpCache});
+	if (
+		lpSolvers.back().second.setState(lpState) == LPResult::Infeasible ||
+		lpSolvers.back().second.check().first == LPResult::Infeasible
+	)
 	{
 		cout << "----->>>>> unsatisfiable" << endl;
 		return {CheckResult::UNSATISFIABLE, {}};
 	}
 
-	auto theorySolver = [&](map<size_t, bool> const& _booleanAssignment) -> optional<Clause>
+	auto theorySolver = [&](size_t _trailSize, map<size_t, bool> const& _newBooleanAssignment) -> optional<Clause>
 	{
-		SolvingState lpStateToCheck = lpState;
-		for (auto&& [constraintIndex, value]: _booleanAssignment)
+		lpSolvers.emplace_back(_trailSize, LPSolver(lpSolvers.back().second));
+
+		for (auto&& [constraintIndex, value]: _newBooleanAssignment)
 		{
 			if (!value || !state().conditionalConstraints.count(constraintIndex))
 				continue;
 			// "reason" is already stored for those constraints.
 			Constraint const& constraint = state().conditionalConstraints.at(constraintIndex);
-			solAssert(
-				constraint.reasons.size() == 1 &&
-				*constraint.reasons.begin() == constraintIndex
-			);
-			lpStateToCheck.constraints.emplace_back(constraint);
+			solAssert(constraint.reasons.size() == 1 && *constraint.reasons.begin() == constraintIndex);
+			lpSolvers.back().second.addConstraint(constraint);
 		}
-		auto&& [result, modelOrReason] = m_lpSolver.check(move(lpStateToCheck));
+		auto&& [result, modelOrReason] = lpSolvers.back().second.check();
 		// We can only really use the result "infeasible". Everything else should be "sat".
 		if (result == LPResult::Infeasible)
 		{
-			// TODO this could be the empty clause if the LP is already infeasible
-			// with only the fixed constraints - run it beforehand!
 			// TODO is it ok to ignore the non-constraint boolean variables here?
 			Clause conflictClause;
 			for (size_t constraintIndex: get<ReasonSet>(modelOrReason))
@@ -271,8 +279,13 @@ pair<CheckResult, vector<string>> BooleanLPSolver::check(vector<Expression> cons
 		else
 			return nullopt;
 	};
+	auto backtrackNotify = [&](size_t _trailSize)
+	{
+		while (lpSolvers.back().first > _trailSize)
+			lpSolvers.pop_back();
+	};
 
-	auto optionalModel = CDCL{move(booleanVariables), clauses, theorySolver}.solve();
+	auto optionalModel = CDCL{move(booleanVariables), clauses, theorySolver, backtrackNotify}.solve();
 	if (!optionalModel)
 	{
 		cout << "==============> CDCL final result: unsatisfiable." << endl;
@@ -489,7 +502,7 @@ optional<LinearExpression> BooleanLPSolver::parseFactor(smtutil::Expression cons
 
 bool BooleanLPSolver::tryAddDirectBounds(Constraint const& _constraint)
 {
-	auto nonzero = _constraint.data | ranges::views::enumerate | ranges::views::tail | ranges::views::filter(
+	auto nonzero = _constraint.data.enumerateTail() | ranges::views::filter(
 		[](std::pair<size_t, rational> const& _x) { return !!_x.second; }
 	);
 	// TODO we can exit early on in the loop above.
@@ -650,7 +663,7 @@ string BooleanLPSolver::toString(Clause const& _clause) const
 string BooleanLPSolver::toString(Constraint const& _constraint) const
 {
 	vector<string> line;
-	for (auto&& [index, multiplier]: _constraint.data | ranges::views::enumerate)
+	for (auto&& [index, multiplier]: _constraint.data.enumerate())
 		if (index > 0 && multiplier != 0)
 		{
 			string mult =

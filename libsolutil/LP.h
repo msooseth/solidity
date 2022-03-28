@@ -24,6 +24,7 @@
 
 #include <vector>
 #include <variant>
+#include <functional>
 
 namespace solidity::util
 {
@@ -76,15 +77,91 @@ struct SolvingState
 	// For each bound and constraint, store an index of the literal
 	// that implies it.
 
+	std::set<size_t> reasons() const;
+
 	struct Compare
 	{
-		explicit Compare(bool _considerVariableNames = true): considerVariableNames(_considerVariableNames) {}
+		explicit Compare(bool _considerVariableNames = false): considerVariableNames(_considerVariableNames) {}
 		bool operator()(SolvingState const& _a, SolvingState const& _b) const;
 		bool considerVariableNames;
 	};
 
+	bool operator==(SolvingState const& _other) const noexcept {
+		return bounds == _other.bounds && constraints == _other.constraints;
+	}
+
 	std::string toString() const;
 };
+
+}
+
+template <class T>
+inline void hashCombine(std::size_t& _seed, T const& _v)
+{
+	std::hash<T> hasher;
+	_seed ^= hasher(_v) + 0x9e3779b9 + (_seed << 6) + (_seed >> 2);
+}
+
+template <class T>
+inline void hashCombineVector(std::size_t& _seed, std::vector<T> const& _v)
+{
+	hashCombine(_seed, _v.size());
+	for (auto const& x: _v)
+		hashCombine(_seed, x);
+}
+
+template<>
+struct std::hash<solidity::util::SolvingState::Bounds>
+{
+	std::size_t operator()(solidity::util::SolvingState::Bounds const& _bounds) const noexcept
+	{
+		std::size_t result = 0;
+		hashCombine(result, _bounds.lower);
+		hashCombine(result, _bounds.upper);
+		return result;
+	}
+};
+
+template<>
+struct std::hash<solidity::util::LinearExpression>
+{
+	std::size_t operator()(solidity::util::LinearExpression const& _linearExpression) const noexcept
+	{
+		std::size_t result = 0;
+		hashCombine(result, _linearExpression.size());
+		for (auto const& x: _linearExpression.enumerate())
+			hashCombine(result, x.second);
+		return result;
+	}
+};
+
+template<>
+struct std::hash<solidity::util::Constraint>
+{
+	std::size_t operator()(solidity::util::Constraint const& _constraint) const noexcept
+	{
+		std::size_t result = 0;
+		hashCombine(result, _constraint.equality);
+		hashCombine(result, _constraint.data);
+		return result;
+	}
+};
+
+template<>
+struct std::hash<solidity::util::SolvingState>
+{
+	std::size_t operator()(solidity::util::SolvingState const& _solvingState) const noexcept
+	{
+		std::size_t result = 0;
+		hashCombineVector(result, _solvingState.bounds);
+		hashCombineVector(result, _solvingState.constraints);
+		return result;
+	}
+};
+
+
+namespace solidity::util
+{
 
 enum class LPResult
 {
@@ -117,7 +194,7 @@ public:
 	SolvingStateSimplifier(SolvingState& _state):
 		m_state(_state) {}
 
-	std::pair<LPResult, std::variant<Model, ReasonSet>> simplify();
+	std::pair<LPResult, std::variant<std::map<size_t, rational>, ReasonSet>> simplify();
 
 private:
 	/// Remove variables that have equal lower and upper bound.
@@ -136,7 +213,7 @@ private:
 	bool m_changed = false;
 
 	SolvingState& m_state;
-	Model m_model;
+	std::map<size_t, rational> m_fixedVariables;
 };
 
 /**
@@ -146,17 +223,13 @@ private:
 class ProblemSplitter
 {
 public:
-	explicit ProblemSplitter(SolvingState const& _state):
-		m_state(_state),
-		m_column(1),
-		m_seenColumns(std::vector<bool>(m_state.variableNames.size(), false))
-	{}
+	explicit ProblemSplitter(SolvingState const& _state);
 
 	/// @returns true if there are still sub-problems to split out.
 	operator bool() const { return m_column < m_state.variableNames.size(); }
 
 	/// @returns the next sub-problem.
-	SolvingState next();
+	std::pair<std::vector<bool>, std::vector<bool>> next();
 
 private:
 	SolvingState const& m_state;
@@ -181,14 +254,45 @@ class LPSolver
 {
 public:
 	explicit LPSolver(bool _supportModels = true);
+	explicit LPSolver(std::unordered_map<SolvingState, LPResult>* _cache):
+		m_cache(_cache) {}
 
-	std::pair<LPResult, std::variant<Model, ReasonSet>> check(SolvingState _state);
+
+	LPResult setState(SolvingState _state);
+	void addConstraint(Constraint _constraint);
+	std::pair<LPResult, std::variant<Model, ReasonSet>> check();
 
 private:
-	using CacheValue = std::pair<LPResult, std::vector<boost::rational<bigint>>>;
+	void combineSubProblems(size_t _combineInto, size_t _combineFrom);
+	void addConstraintToSubProblem(size_t _subProblem, Constraint _constraint);
+	void updateSubProblems();
 
-	bool m_supportModels = true;
-	std::map<SolvingState, CacheValue, SolvingState::Compare> m_cache;
+	/// Ground state for CDCL. This is shared by copies of the solver.
+	/// Only ``setState`` changes the state. Copies will only use
+	/// ``addConstraint`` which does not change m_state.
+	std::shared_ptr<SolvingState> m_state;
+	struct SubProblem
+	{
+		// TODO now we could actually put the constraints here again.
+		std::vector<Constraint> removableConstraints;
+		bool dirty = true;
+		LPResult result = LPResult::Unknown;
+		std::vector<boost::rational<bigint>> model = {};
+		std::set<size_t> variables = {};
+	};
+
+	SolvingState stateFromSubProblem(size_t _index) const;
+	ReasonSet reasonSetForSubProblem(SubProblem const& _subProblem);
+
+	std::shared_ptr<std::map<size_t, rational>> m_fixedVariables;
+	/// These use "copy on write".
+	std::vector<std::shared_ptr<SubProblem>> m_subProblems;
+	std::vector<size_t> m_subProblemsPerVariable;
+	std::vector<size_t> m_subProblemsPerConstraint;
+	/// TODO also store the first infeasible subproblem?
+	/// TODO still retain the cache?
+	std::unordered_map<SolvingState, LPResult>* m_cache = nullptr;
+
 };
 
 }
