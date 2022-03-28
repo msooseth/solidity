@@ -77,6 +77,7 @@ optional<CDCL::Model> CDCL::solve()
 		solved = solve_loop(max_conflicts, model, solution);
 		loop++;
 	}
+	cout << "c solved, conflicts: " << m_sumConflicts << endl;
 	assert(solution != 3);
 	if (solution) return model;
 	else return nullopt;
