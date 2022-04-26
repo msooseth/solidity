@@ -23,6 +23,7 @@
 #include <string>
 #include <functional>
 #include <memory>
+#include <limits>
 #include <optional>
 #include "heap.h"
 
@@ -52,6 +53,71 @@ struct Literal
 };
 using Clause = std::vector<Literal>;
 
+
+struct Link
+{
+	size_t prev = std::numeric_limits<size_t>::max();
+	size_t next = std::numeric_limits<size_t>::max();
+};
+
+struct Queue
+{
+	size_t first;
+	size_t last;
+	size_t unassigned;
+	uint64_t bumped;
+
+	Queue () :
+		first (std::numeric_limits<size_t>::max()),
+		last (std::numeric_limits<size_t>::max()),
+		unassigned (std::numeric_limits<size_t>::max()),
+		bumped (0)
+	{}
+
+	void enqueue (std::vector<Link>& links, const size_t var) {
+		auto& l = links[var];
+		l.prev = last;
+		if (l.prev != std::numeric_limits<size_t>::max()) {
+			// Not the first one in the list
+			links[last].next = var;
+		} else {
+			first = var;
+		}
+		last = var;
+		l.next = std::numeric_limits<size_t>::max();
+	}
+
+	void dequeue (std::vector<Link>& vmtf_links, const size_t var) {
+		auto& l = vmtf_links[var];
+
+		if (l.prev != std::numeric_limits<size_t>::max()) {
+			// Not the first one in the list
+			vmtf_links[l.prev].next = l.next;
+		} else {
+			first = l.next;
+		}
+
+		if (l.next != std::numeric_limits<size_t>::max()) {
+			// No the last one in the list
+			vmtf_links[l.next].prev = l.prev;
+		} else {
+			last = l.prev;
+		}
+	}
+};
+
+struct vmtf_analyze_bumped_smaller
+{
+	vmtf_analyze_bumped_smaller (const std::vector<uint64_t>& _btab):
+		btab (_btab)
+	{}
+
+	bool operator () (const size_t& a, const size_t& b) const {
+		return btab[a] < btab[b];
+	}
+	const std::vector<uint64_t>& btab;
+};
+
 class CDCL
 {
 public:
@@ -66,21 +132,8 @@ public:
 	std::optional<Model> solve();
 
 private:
-	struct VarOrderLt { ///Order variables according to their activities
-        const std::vector<double>&  activities;
-        bool operator () (const int x, const int y) const
-        {
-            return activities[(size_t)x] > activities[(size_t)y];
-        }
-
-        explicit VarOrderLt(const std::vector<double>& _activities) :
-            activities(_activities)
-        {}
-    };
-
-
 	double luby(double y, int x);
-	bool solve_loop(const uint32_t max_conflicts, CDCL::Model& model, int& solution);
+	bool solveLoop(const uint32_t max_conflicts, CDCL::Model& model, int& solution);
 	void setupWatches(Clause& _clause);
 	std::optional<Clause> propagate();
 	std::pair<Clause, size_t> analyze(Clause _conflictClause);
@@ -121,40 +174,22 @@ private:
 
 	/// Current assignments.
 	std::map<size_t, bool> m_assignments;
-	std::map<size_t, bool> m_assignments_cache; // Polarity caching. All propagated values end up here
+	std::map<size_t, bool> m_assignmentsCache; // Polarity caching. All propagated values end up here
 	std::map<size_t, size_t> m_levelForVariable;
 	/// TODO wolud be good to not have to copy the clauses
 	std::map<Literal, Clause const*> m_reason;
 	uint64_t m_sumConflicts = 0;
 
 	// Var activity
-	Heap<VarOrderLt> order;
-	std::vector<double> activity;
-	double var_inc_vsids = 1;
-	double var_decay = 0.95;
-	void vsids_decay_var_act()
-	{
-		var_inc_vsids *= (1.0 / var_decay);
-	}
-	void vsids_bump_var_act(uint32_t var)
-	{
-		assert(activity.size() > var);
-		activity[var] += var_inc_vsids;
-
-		bool rescaled = false;
-		if (activity[var] > 1e100) {
-			// Rescale
-			for (auto& a: activity) a *= 1e-100;
-			rescaled = true;
-			var_inc_vsids *= 1e-100;
-		}
-
-		// Update order_heap with respect to new activity:
-		if (order.inHeap((int)var)) order.decrease((int)var);
-		if (rescaled) assert(order.heap_property());
-	}
-
-	// TODO group those into a class
+	Queue vmtf_queue = Queue();
+	uint64_t bumped = 0;
+	std::vector<uint64_t> vmtf_btab; ///< Indexed by variable number. enqueue time stamps for queue
+	std::vector<Link> vmtf_links; ///< Indexed by variable number. table of vmtf_links for decision queue.
+	void vmtf_init_enqueue (const size_t var);
+	void vmtf_update_queue_unassigned (const size_t var);
+	size_t vmtf_pick_var();
+	void vmtf_bump_queue (const size_t var);
+	std::vector<size_t> vmtf_vars_to_bump;
 
 	std::vector<Literal> m_assignmentTrail;
 	uint64_t m_longest_trail = 0;

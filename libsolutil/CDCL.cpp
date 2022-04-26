@@ -37,8 +37,7 @@ CDCL::CDCL(
 ):
 	m_theorySolver(_theorySolver),
 	m_backtrackNotify(_backtrackNotify),
-	m_variables(move(_variables)),
-	order(VarOrderLt(activity))
+	m_variables(move(_variables))
 {
 	for (Clause const& clause: _clauses)
 		addClause(clause);
@@ -46,25 +45,77 @@ CDCL::CDCL(
 	// TODO some sanity checks like no empty clauses, no duplicate literals?
 }
 
+void CDCL::vmtf_init_enqueue (const size_t var)
+{
+	assert(var < vmtf_links.size());
+	Link & l = vmtf_links[var];
+
+	//Put at the end of the queue
+	l.next = numeric_limits<size_t>::max();
+	if (vmtf_queue.last != numeric_limits<size_t>::max()) {
+		// Not empty queue
+		assert(vmtf_links[vmtf_queue.last].next == numeric_limits<size_t>::max());
+		vmtf_links[vmtf_queue.last].next = var;
+	} else {
+		// Empty queue
+		assert(vmtf_queue.first == numeric_limits<size_t>::max());
+		vmtf_queue.first = var;
+	}
+	l.prev = vmtf_queue.last;
+	vmtf_queue.last = var;
+
+	vmtf_btab[var] = ++bumped; // set timestamp of enqueue
+	vmtf_update_queue_unassigned(vmtf_queue.last);
+}
+
+void CDCL::vmtf_bump_queue (const size_t var) {
+	if (vmtf_links[var].next == numeric_limits<size_t>::max()) return;
+
+	vmtf_queue.dequeue (vmtf_links, var);
+	vmtf_queue.enqueue (vmtf_links, var);
+
+	assert (bumped != numeric_limits<uint64_t>::max());
+	vmtf_btab[var] = ++bumped;
+	if (!m_assignments.count(var)) vmtf_update_queue_unassigned(var);
+}
+
+void CDCL::vmtf_update_queue_unassigned (const size_t var)
+{
+	assert(var != numeric_limits<size_t>::max());
+	vmtf_queue.bumped = vmtf_btab[var];
+	vmtf_queue.unassigned = var;
+}
+
+size_t CDCL::vmtf_pick_var()
+{
+	uint64_t searched = 0;
+	size_t var = vmtf_queue.unassigned;
+
+	while (var != numeric_limits<size_t>::max() && m_assignments.count(var))
+	{
+		var = vmtf_links[var].prev;
+		searched++;
+	}
+
+	if (var == numeric_limits<size_t>::max()) return var;
+	if (searched) vmtf_update_queue_unassigned(var);
+	return var;
+}
 
 double CDCL::luby(double y, int x)
 {
-    int size = 1;
-    int seq;
-    for (seq = 0
-        ; size < x + 1
-        ; seq++
-    ) {
-        size = 2 * size + 1;
-    }
+	int size = 1;
+	int seq;
+	for (seq = 0; size < x + 1; seq++) size = 2 * size + 1;
 
-    while (size - 1 != x) {
-        size = (size - 1) >> 1;
-        seq--;
-        x = x % size;
-    }
+	while (size - 1 != x)
+	{
+		size = (size - 1) >> 1;
+		seq--;
+		x = x % size;
+	}
 
-    return std::pow(y, seq);
+	return std::pow(y, seq);
 }
 
 optional<CDCL::Model> CDCL::solve()
@@ -76,7 +127,7 @@ optional<CDCL::Model> CDCL::solve()
 	while(!solved) {
 		solution = 3;
 		uint32_t max_conflicts = (uint32_t)((double)luby(2, loop) * 40.0);
-		solved = solve_loop(max_conflicts, model, solution);
+		solved = solveLoop(max_conflicts, model, solution);
 		loop++;
 	}
 	cout << "c solved, conflicts: " << m_sumConflicts << endl;
@@ -85,7 +136,7 @@ optional<CDCL::Model> CDCL::solve()
 	else return nullopt;
 }
 
-bool CDCL::solve_loop(const uint32_t max_conflicts, CDCL::Model& model, int& solution)
+bool CDCL::solveLoop(const uint32_t max_conflicts, CDCL::Model& model, int& solution)
 {
 	assert (max_conflicts > 0);
 	uint32_t conflicts = 0;
@@ -142,8 +193,8 @@ bool CDCL::solve_loop(const uint32_t max_conflicts, CDCL::Model& model, int& sol
 
 				// Polarity caching below
 				bool positive = false;
-				auto const& found = m_assignments_cache.find(*variable);
-				if (found != m_assignments_cache.end()) positive = found->second;
+				auto const& found = m_assignmentsCache.find(*variable);
+				if (found != m_assignmentsCache.end()) positive = found->second;
 				enqueue(Literal{positive, *variable}, nullptr);
 			}
 			else
@@ -241,6 +292,7 @@ std::pair<Clause, size_t> CDCL::analyze(Clause _conflictClause)
 	//cout << "Analyzing conflict." << endl;
 	Clause learntClause;
 	size_t backtrackLevel = 0;
+	vmtf_vars_to_bump.clear();
 
 	set<size_t> seenVariables;
 
@@ -264,7 +316,7 @@ std::pair<Clause, size_t> CDCL::analyze(Clause _conflictClause)
 				else
 				{
 					//cout << "    adding " << toString(literal) << " @" << variableLevel << " to learnt clause." << endl;
-					vsids_bump_var_act((uint32_t)literal.variable);
+					vmtf_vars_to_bump.push_back(literal.variable);
 					learntClause.push_back(literal);
 					backtrackLevel = max(backtrackLevel, variableLevel);
 				}
@@ -291,6 +343,9 @@ std::pair<Clause, size_t> CDCL::analyze(Clause _conflictClause)
 	// Move to front so we can directly propagate.
 	swap(learntClause.front(), learntClause.back());
 
+	std::sort(vmtf_vars_to_bump.begin(),vmtf_vars_to_bump.end(), vmtf_analyze_bumped_smaller(vmtf_btab));
+	for (auto const& v: vmtf_vars_to_bump) vmtf_bump_queue(v);
+
 	//cout << "-> learnt clause: " << toString(learntClause) << " backtrack to " << backtrackLevel << endl;
 
 
@@ -299,17 +354,26 @@ std::pair<Clause, size_t> CDCL::analyze(Clause _conflictClause)
 
 void CDCL::addClause(Clause _clause)
 {
-	uint64_t max_var = (uint32_t)activity.size();
-	uint64_t new_max_var = 0;
+// 	vmtf_btab.insert(vmtf_btab.end(), m_variables.size(), 0);
+// 	vmtf_links.insert(vmtf_links.end(), m_variables.size(), Link());
+// 	for(size_t i = 0; i < m_variables.size(); i++) vmtf_init_enqueue(i);
+
+	size_t max_var = (uint32_t)vmtf_btab.size();
+	size_t new_max_var = 0;
+	for(auto const& l: _clause) new_max_var = std::max(l.variable+1, max_var);
+
+	size_t to_add = new_max_var - max_var;
+	vmtf_btab.insert(vmtf_btab.end(), to_add, 0);
+	vmtf_links.insert(vmtf_links.end(), to_add, Link());
+	//for(size_t i = 0; i < m_variables.size(); i++) vmtf_init_enqueue(i);
+
 	for(auto const& l: _clause) {
-		new_max_var = std::max<uint64_t>(l.variable+1, max_var);
-	}
-	int64_t to_add = (int64_t)new_max_var - (int64_t)max_var;
-	if (to_add > 0) {
-		activity.insert(activity.end(), (uint64_t)to_add, 0.0);
-	}
-	for(auto const& l: _clause) {
-		if (!order.inHeap((int)l.variable)) order.insert((int)l.variable);
+		if (vmtf_links[l.variable].prev == std::numeric_limits<size_t>::max() &&
+			vmtf_links[l.variable].next == std::numeric_limits<size_t>::max() &&
+			vmtf_queue.last != l.variable)
+		{
+			vmtf_init_enqueue(l.variable);
+		}
 	}
 
 	m_clauses.push_back(make_unique<Clause>(move(_clause)));
@@ -339,7 +403,7 @@ void CDCL::cancelUntil(size_t _backtrackLevel)
 	solAssert(m_assignmentQueuePointer == m_assignmentTrail.size());
 	size_t assignmentsToUndo = m_assignmentTrail.size() - m_decisionPoints.at(_backtrackLevel);
 	if (m_assignmentTrail.size() > m_longest_trail) {
-		m_assignments_cache= m_assignments;
+		m_assignmentsCache = m_assignments;
 		m_longest_trail = m_assignmentTrail.size();
 	}
 
@@ -352,8 +416,8 @@ void CDCL::cancelUntil(size_t _backtrackLevel)
 		m_reason.erase(l);
 		// TODO maybe could do without.
 		m_levelForVariable.erase(l.variable);
-		if (!order.inHeap((int)l.variable)) {
-			order.insert((int)l.variable);
+		if (vmtf_queue.bumped < vmtf_btab[l.variable]) {
+			vmtf_update_queue_unassigned(l.variable);
 		}
 	}
 	m_decisionPoints.resize(_backtrackLevel);
@@ -364,12 +428,9 @@ void CDCL::cancelUntil(size_t _backtrackLevel)
 
 optional<size_t> CDCL::nextDecisionVariable()
 {
-	while(true) {
-		if (order.empty()) return nullopt;
-		size_t i = (size_t)order.removeMin();
-		if (!m_assignments.count(i)) return i;
-	}
-	return nullopt;
+	const size_t v = vmtf_pick_var();
+	if (v == std::numeric_limits<size_t>::max()) return nullopt;
+	return v;
 }
 
 bool CDCL::isAssigned(Literal const& _literal) const
