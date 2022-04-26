@@ -45,60 +45,60 @@ CDCL::CDCL(
 	// TODO some sanity checks like no empty clauses, no duplicate literals?
 }
 
-void CDCL::vmtf_init_enqueue (const size_t var)
+void CDCL::vmtfInitEnqueue (const size_t var)
 {
-	assert(var < vmtf_links.size());
-	Link & l = vmtf_links[var];
+	assert(var < m_vmtfLinks.size());
+	Link & l = m_vmtfLinks[var];
 
 	//Put at the end of the queue
 	l.next = numeric_limits<size_t>::max();
-	if (vmtf_queue.last != numeric_limits<size_t>::max()) {
+	if (m_vmtfQueue.last != numeric_limits<size_t>::max()) {
 		// Not empty queue
-		assert(vmtf_links[vmtf_queue.last].next == numeric_limits<size_t>::max());
-		vmtf_links[vmtf_queue.last].next = var;
+		assert(m_vmtfLinks[m_vmtfQueue.last].next == numeric_limits<size_t>::max());
+		m_vmtfLinks[m_vmtfQueue.last].next = var;
 	} else {
 		// Empty queue
-		assert(vmtf_queue.first == numeric_limits<size_t>::max());
-		vmtf_queue.first = var;
+		assert(m_vmtfQueue.first == numeric_limits<size_t>::max());
+		m_vmtfQueue.first = var;
 	}
-	l.prev = vmtf_queue.last;
-	vmtf_queue.last = var;
+	l.prev = m_vmtfQueue.last;
+	m_vmtfQueue.last = var;
 
-	vmtf_btab[var] = ++bumped; // set timestamp of enqueue
-	vmtf_update_queue_unassigned(vmtf_queue.last);
+	m_vmtfBumpVal[var] = ++m_bumped; // set timestamp of enqueue
+	vmtfUpdateQueueUnassigned(m_vmtfQueue.last);
 }
 
-void CDCL::vmtf_bump_queue (const size_t var) {
-	if (vmtf_links[var].next == numeric_limits<size_t>::max()) return;
+void CDCL::vmtfBumpQueue (const size_t var) {
+	if (m_vmtfLinks[var].next == numeric_limits<size_t>::max()) return;
 
-	vmtf_queue.dequeue (vmtf_links, var);
-	vmtf_queue.enqueue (vmtf_links, var);
+	m_vmtfQueue.dequeue (m_vmtfLinks, var);
+	m_vmtfQueue.enqueue (m_vmtfLinks, var);
 
-	assert (bumped != numeric_limits<uint64_t>::max());
-	vmtf_btab[var] = ++bumped;
-	if (!m_assignments.count(var)) vmtf_update_queue_unassigned(var);
+	assert (m_bumped != numeric_limits<uint64_t>::max());
+	m_vmtfBumpVal[var] = ++m_bumped;
+	if (!m_assignments.count(var)) vmtfUpdateQueueUnassigned(var);
 }
 
-void CDCL::vmtf_update_queue_unassigned (const size_t var)
+void CDCL::vmtfUpdateQueueUnassigned (const size_t var)
 {
 	assert(var != numeric_limits<size_t>::max());
-	vmtf_queue.bumped = vmtf_btab[var];
-	vmtf_queue.unassigned = var;
+	m_vmtfQueue.bumped = m_vmtfBumpVal[var];
+	m_vmtfQueue.unassigned = var;
 }
 
-size_t CDCL::vmtf_pick_var()
+size_t CDCL::vmtfPickVar()
 {
 	uint64_t searched = 0;
-	size_t var = vmtf_queue.unassigned;
+	size_t var = m_vmtfQueue.unassigned;
 
 	while (var != numeric_limits<size_t>::max() && m_assignments.count(var))
 	{
-		var = vmtf_links[var].prev;
+		var = m_vmtfLinks[var].prev;
 		searched++;
 	}
 
 	if (var == numeric_limits<size_t>::max()) return var;
-	if (searched) vmtf_update_queue_unassigned(var);
+	if (searched) vmtfUpdateQueueUnassigned(var);
 	return var;
 }
 
@@ -121,22 +121,21 @@ double CDCL::luby(double y, int x)
 optional<CDCL::Model> CDCL::solve()
 {
 	CDCL::Model model;
-	int solution;
-	int loop = 1;
-	bool solved = false;
-	while(!solved) {
-		solution = 3;
-		uint32_t max_conflicts = (uint32_t)((double)luby(2, loop) * 40.0);
-		solved = solveLoop(max_conflicts, model, solution);
+	int loop = 0;
+	std::optional<bool> ret = nullopt;
+	while(ret == nullopt) {
 		loop++;
+		uint32_t max_conflicts = (uint32_t)((double)luby(2, loop) * 40.0);
+		ret = solveLoop(max_conflicts, model);
+		cout << "c restarting" << endl;
 	}
 	cout << "c solved, conflicts: " << m_sumConflicts << endl;
-	assert(solution != 3);
-	if (solution) return model;
+
+	if (*ret) return model;
 	else return nullopt;
 }
 
-bool CDCL::solveLoop(const uint32_t max_conflicts, CDCL::Model& model, int& solution)
+optional<bool> CDCL::solveLoop(const uint32_t max_conflicts, CDCL::Model& model)
 {
 	assert (max_conflicts > 0);
 	uint32_t conflicts = 0;
@@ -165,8 +164,7 @@ bool CDCL::solveLoop(const uint32_t max_conflicts, CDCL::Model& model, int& solu
 			if (currentDecisionLevel() == 0)
 			{
 //				cout << "Unsatisfiable" << endl;
-				solution = 0;
-				return true;
+				return false;
 			}
 			auto&& [learntClause, backtrackLevel] = analyze(move(*conflictClause));
 			cancelUntil(backtrackLevel);
@@ -202,13 +200,12 @@ bool CDCL::solveLoop(const uint32_t max_conflicts, CDCL::Model& model, int& solu
 				//cout << "satisfiable." << endl;
 				//for (auto&& [i, value]: m_assignments | ranges::view::enumerate())
 				//	cout << " " << m_variables.at(i) << ": " << value.toString() << endl;
-				solution = 1;
 				model = m_assignments;
 				return true;
 			}
 		}
 	}
-	return false;
+	return nullopt;
 }
 
 void CDCL::setupWatches(Clause& _clause)
@@ -292,7 +289,7 @@ std::pair<Clause, size_t> CDCL::analyze(Clause _conflictClause)
 	//cout << "Analyzing conflict." << endl;
 	Clause learntClause;
 	size_t backtrackLevel = 0;
-	vmtf_vars_to_bump.clear();
+	m_vmtfVarsToBump.clear();
 
 	set<size_t> seenVariables;
 
@@ -316,7 +313,7 @@ std::pair<Clause, size_t> CDCL::analyze(Clause _conflictClause)
 				else
 				{
 					//cout << "    adding " << toString(literal) << " @" << variableLevel << " to learnt clause." << endl;
-					vmtf_vars_to_bump.push_back(literal.variable);
+					m_vmtfVarsToBump.push_back(literal.variable);
 					learntClause.push_back(literal);
 					backtrackLevel = max(backtrackLevel, variableLevel);
 				}
@@ -343,8 +340,8 @@ std::pair<Clause, size_t> CDCL::analyze(Clause _conflictClause)
 	// Move to front so we can directly propagate.
 	swap(learntClause.front(), learntClause.back());
 
-	std::sort(vmtf_vars_to_bump.begin(),vmtf_vars_to_bump.end(), vmtf_analyze_bumped_smaller(vmtf_btab));
-	for (auto const& v: vmtf_vars_to_bump) vmtf_bump_queue(v);
+	std::sort(m_vmtfVarsToBump.begin(),m_vmtfVarsToBump.end(), vmtf_analyze_bumped_smaller(m_vmtfBumpVal));
+	for (auto const& v: m_vmtfVarsToBump) vmtfBumpQueue(v);
 
 	//cout << "-> learnt clause: " << toString(learntClause) << " backtrack to " << backtrackLevel << endl;
 
@@ -354,25 +351,25 @@ std::pair<Clause, size_t> CDCL::analyze(Clause _conflictClause)
 
 void CDCL::addClause(Clause _clause)
 {
-// 	vmtf_btab.insert(vmtf_btab.end(), m_variables.size(), 0);
-// 	vmtf_links.insert(vmtf_links.end(), m_variables.size(), Link());
-// 	for(size_t i = 0; i < m_variables.size(); i++) vmtf_init_enqueue(i);
+// 	m_vmtfBumpVal.insert(m_vmtfBumpVal.end(), m_variables.size(), 0);
+// 	m_vmtfLinks.insert(m_vmtfLinks.end(), m_variables.size(), Link());
+// 	for(size_t i = 0; i < m_variables.size(); i++) vmtfInitEnqueue(i);
 
-	size_t max_var = (uint32_t)vmtf_btab.size();
+	size_t max_var = (uint32_t)m_vmtfBumpVal.size();
 	size_t new_max_var = 0;
 	for(auto const& l: _clause) new_max_var = std::max(l.variable+1, max_var);
 
 	size_t to_add = new_max_var - max_var;
-	vmtf_btab.insert(vmtf_btab.end(), to_add, 0);
-	vmtf_links.insert(vmtf_links.end(), to_add, Link());
-	//for(size_t i = 0; i < m_variables.size(); i++) vmtf_init_enqueue(i);
+	m_vmtfBumpVal.insert(m_vmtfBumpVal.end(), to_add, 0);
+	m_vmtfLinks.insert(m_vmtfLinks.end(), to_add, Link());
+	//for(size_t i = 0; i < m_variables.size(); i++) vmtfInitEnqueue(i);
 
 	for(auto const& l: _clause) {
-		if (vmtf_links[l.variable].prev == std::numeric_limits<size_t>::max() &&
-			vmtf_links[l.variable].next == std::numeric_limits<size_t>::max() &&
-			vmtf_queue.last != l.variable)
+		if (m_vmtfLinks[l.variable].prev == std::numeric_limits<size_t>::max() &&
+			m_vmtfLinks[l.variable].next == std::numeric_limits<size_t>::max() &&
+			m_vmtfQueue.last != l.variable)
 		{
-			vmtf_init_enqueue(l.variable);
+			vmtfInitEnqueue(l.variable);
 		}
 	}
 
@@ -416,8 +413,8 @@ void CDCL::cancelUntil(size_t _backtrackLevel)
 		m_reason.erase(l);
 		// TODO maybe could do without.
 		m_levelForVariable.erase(l.variable);
-		if (vmtf_queue.bumped < vmtf_btab[l.variable]) {
-			vmtf_update_queue_unassigned(l.variable);
+		if (m_vmtfQueue.bumped < m_vmtfBumpVal[l.variable]) {
+			vmtfUpdateQueueUnassigned(l.variable);
 		}
 	}
 	m_decisionPoints.resize(_backtrackLevel);
@@ -428,7 +425,7 @@ void CDCL::cancelUntil(size_t _backtrackLevel)
 
 optional<size_t> CDCL::nextDecisionVariable()
 {
-	const size_t v = vmtf_pick_var();
+	const size_t v = vmtfPickVar();
 	if (v == std::numeric_limits<size_t>::max()) return nullopt;
 	return v;
 }

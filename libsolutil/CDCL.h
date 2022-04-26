@@ -87,19 +87,19 @@ struct Queue
 		l.next = std::numeric_limits<size_t>::max();
 	}
 
-	void dequeue (std::vector<Link>& vmtf_links, const size_t var) {
-		auto& l = vmtf_links[var];
+	void dequeue (std::vector<Link>& m_vmtfLinks, const size_t var) {
+		auto& l = m_vmtfLinks[var];
 
 		if (l.prev != std::numeric_limits<size_t>::max()) {
 			// Not the first one in the list
-			vmtf_links[l.prev].next = l.next;
+			m_vmtfLinks[l.prev].next = l.next;
 		} else {
 			first = l.next;
 		}
 
 		if (l.next != std::numeric_limits<size_t>::max()) {
 			// No the last one in the list
-			vmtf_links[l.next].prev = l.prev;
+			m_vmtfLinks[l.next].prev = l.prev;
 		} else {
 			last = l.prev;
 		}
@@ -133,7 +133,7 @@ public:
 
 private:
 	double luby(double y, int x);
-	bool solveLoop(const uint32_t max_conflicts, CDCL::Model& model, int& solution);
+	std::optional<bool> solveLoop(const uint32_t max_conflicts, CDCL::Model& model);
 	void setupWatches(Clause& _clause);
 	std::optional<Clause> propagate();
 	std::pair<Clause, size_t> analyze(Clause _conflictClause);
@@ -180,16 +180,16 @@ private:
 	std::map<Literal, Clause const*> m_reason;
 	uint64_t m_sumConflicts = 0;
 
-	// Var activity
-	Queue vmtf_queue = Queue();
-	uint64_t bumped = 0;
-	std::vector<uint64_t> vmtf_btab; ///< Indexed by variable number. enqueue time stamps for queue
-	std::vector<Link> vmtf_links; ///< Indexed by variable number. table of vmtf_links for decision queue.
-	void vmtf_init_enqueue (const size_t var);
-	void vmtf_update_queue_unassigned (const size_t var);
-	size_t vmtf_pick_var();
-	void vmtf_bump_queue (const size_t var);
-	std::vector<size_t> vmtf_vars_to_bump;
+	// Variable branch picking
+	Queue m_vmtfQueue = Queue();
+	uint64_t m_bumped = 0;
+	std::vector<uint64_t> m_vmtfBumpVal; ///< Indexed by variable number. Enqueue time stamps for queue
+	std::vector<Link> m_vmtfLinks; ///< Indexed by variable number. Doubly linked list
+	std::vector<size_t> m_vmtfVarsToBump; // vars that
+	void vmtfInitEnqueue (const size_t var);
+	void vmtfUpdateQueueUnassigned (const size_t var);
+	size_t vmtfPickVar();
+	void vmtfBumpQueue (const size_t var);
 
 	std::vector<Literal> m_assignmentTrail;
 	uint64_t m_longest_trail = 0;
