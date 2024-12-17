@@ -1,0 +1,6 @@
+#!/bin/bash
+
+rm CMake* Make* cmake* compile* test*
+cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo -DUSE_Z3=FALSE -DTESTS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ..
+# cmake -DCMAKE_BUILD_TYPE=Release -DUSE_Z3=FALSE -DTESTS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ..
+make -j10
